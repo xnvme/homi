@@ -10,7 +10,13 @@
 #include <homid.h>
 #include <homid_ipc.h>
 #include <homid_log.h>
+#include <homid_xal.h>
 #include <homi_proto.h>
+
+struct worker_args {
+	int client_fd;
+	struct homid *homid;
+};
 
 static int
 _open_socket(char *socket_path)
@@ -94,9 +100,11 @@ homid_ipc_close(struct homid_ipc_connection *conn)
 static void *
 worker(void *arg)
 {
-	int sock_fd = (int)(intptr_t)arg;
+	struct worker_args *wargs = arg;
+	struct homid *homid = wargs->homid;
+	int sock_fd = wargs->client_fd;
 	struct homi_msg_header hdr;
-	char *payload;
+	void *payload;
 	int err;
 
 	free(wargs);
@@ -108,7 +116,7 @@ worker(void *arg)
 	}
 
 	switch ((enum homi_msg_type)hdr.type) {
-	case HOMI_MSG_TYPE_HELLOWORLD: {
+	case HOMI_MSG_TYPE_HELLOWORLD:
 		struct homi_req_helloworld *request = (struct homi_req_helloworld *)payload;
 		char *response;
 
@@ -129,7 +137,36 @@ worker(void *arg)
 		}
 
 		break;
-	}
+
+	case HOMI_MSG_TYPE_XAL_CONNECT:
+		struct homi_req_xal_connect *req = (struct homi_req_xal_connect *)payload;
+		struct homi_res_xal_connect res = {0};
+		struct homid_device *device = NULL;
+
+		if (!req) {
+			homid_log(LOG_ERR, "Error: Payload required for XAL_CONNECT request");
+			res.err = -EINVAL;
+			goto send_response;
+		}
+
+		device = homid_device_get(homid, req->dev_uri);
+
+		if (!device) {
+			homid_log(LOG_ERR, "XAL_CONNECT: device not found: %s", req->dev_uri);
+			res.err = -ENODEV;
+			goto send_response;
+		}
+
+		memcpy(res.shm_name, device->shm_name, sizeof(res.shm_name));
+
+send_response:
+		err = homi_proto_socket_write(sock_fd, &hdr, &res, sizeof(res));
+		if (err) {
+			homid_log(LOG_ERR, "Failed: homi_proto_socket_write(); err(%d)", err);
+		}
+
+		break;
+
 	default:
 		homid_log(LOG_WARNING, "Unknown message type: %u", hdr.type);
 		break;
@@ -145,6 +182,7 @@ int
 homid_ipc_accept(struct homid *homid)
 {
 	struct homid_ipc_connection *conn;
+	struct worker_args *wargs;
 	struct sockaddr addr;
 	pthread_t thr_id;
 	uint32_t len;
@@ -167,10 +205,23 @@ homid_ipc_accept(struct homid *homid)
 		return 0;
 	}
 
-	err = pthread_create(&thr_id, NULL, worker, (void *)(intptr_t)client_fd);
+	wargs = calloc(1, sizeof(*wargs));
+	if (!wargs) {
+		err = -errno;
+		homid_log(LOG_CRIT, "Failed: calloc(); err(%d)", err);
+		close(client_fd);
+		return err;
+	}
+
+	wargs->client_fd = client_fd;
+	wargs->homid = homid;
+
+	err = pthread_create(&thr_id, NULL, worker, wargs);
 	if (err) {
-			homid_log(LOG_ERR, "Failed: pthread_create(); err(%d)", err);
-			return err;
+		homid_log(LOG_ERR, "Failed: pthread_create(); err(%d)", err);
+		free(wargs);
+		close(client_fd);
+		return err;
 	}
 
 	return 0;
