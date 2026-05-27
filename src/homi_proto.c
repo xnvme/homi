@@ -42,13 +42,14 @@ _write_to_buffer(int sock_fd, void *buf, size_t len)
 }
 
 int
-homi_proto_socket_read(int sock_fd, struct homi_msg_header *hdr, char **buf)
+homi_proto_socket_read(int sock_fd, struct homi_msg_header *hdr, void **buf)
 {
 	char *payload = NULL;
 	int err;
 
 	err = _read_from_buffer(sock_fd, hdr, sizeof(*hdr));
 	if (err) {
+		*buf = NULL;
 		return err;
 	}
 

@@ -1,16 +1,25 @@
 #include <errno.h>
+#include <fcntl.h>
+#include <semaphore.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+
+#include <libxal.h>
 
 #include <homic.h>
 #include <homi_proto.h>
 
 struct homic_client {
 	int fd;
+	size_t xal_count;
+	struct xal **xals;
 };
 
 static struct homic_client *g_homic_client = NULL;
@@ -69,6 +78,12 @@ homic_disconnect()
 		close(g_homic_client->fd);
 	}
 
+	for (size_t i = 0; i < g_homic_client->xal_count; i++) {
+		struct xal *xal = g_homic_client->xals[i];
+		xal_close(xal);
+	}
+	free(g_homic_client->xals);
+
 	free(g_homic_client);
 	g_homic_client = NULL;
 }
@@ -79,7 +94,7 @@ homic_helloworld(int32_t value, char **out)
 	struct homi_msg_header hdr = {0};
 	struct homi_req_helloworld req = {0};
 	enum homi_msg_type msg_type = HOMI_MSG_TYPE_HELLOWORLD;
-	char *response;
+	void *response = NULL;
 	int err;
 
 	if (!g_homic_client) {
@@ -98,7 +113,7 @@ homic_helloworld(int32_t value, char **out)
 		return err;
 	}
 
-	err = homi_proto_socket_read(g_homic_client->fd, &hdr, &response);
+	err = homi_proto_socket_read(g_homic_client->fd, &hdr, (void **)&response);
 	if (err) {
 		fprintf(stderr, "Failed: homi_proto_socket_read(hdr); err(%d)\n", err);
 		return err;
@@ -106,4 +121,67 @@ homic_helloworld(int32_t value, char **out)
 
 	*out = response;
 	return 0;
+}
+
+int
+homic_connect_xal(char *dev_uri, struct xal **out)
+{
+	struct homi_msg_header hdr = {0};
+	struct homi_req_xal_connect req = {0};
+	struct homi_res_xal_connect *res = NULL;
+	struct xal **new_xal;
+	char shm_name[64];
+	size_t new_count;
+	int err;
+
+	if (!g_homic_client) {
+		err = -ENOTCONN;
+		fprintf(stderr, "Failed: No connection, please call homic_connect(); err(%d)\n", err);
+		return err;
+	}
+
+	strncpy(req.dev_uri, dev_uri, sizeof(req.dev_uri) - 1);
+	hdr.type = HOMI_MSG_TYPE_XAL_CONNECT;
+
+	err = homi_proto_socket_write(g_homic_client->fd, &hdr, &req, sizeof(req));
+	if (err) {
+		fprintf(stderr, "Failed: homi_proto_socket_write(); err(%d)\n", err);
+		return err;
+	}
+
+	err = homi_proto_socket_read(g_homic_client->fd, &hdr, (void **)&res);
+	if (err) {
+		fprintf(stderr, "Failed: homi_proto_socket_read(); err(%d)\n", err);
+		return err;
+	}
+	if (res->err) {
+		err = res->err;
+		fprintf(stderr, "Failed: daemon xal_connect error; err(%d)\n", err);
+		goto exit;
+	}
+
+	/* Copy out of shm before any further operations touch the segment. */
+	memcpy(shm_name, res->shm_name, sizeof(shm_name));
+
+	err = xal_from_shm(shm_name, out);
+	if (err) {
+		fprintf(stderr, "Failed: xal_from_shm(); err(%d)\n", err);
+		goto exit;
+	}
+
+	new_count = g_homic_client->xal_count + 1;
+	new_xal = realloc(g_homic_client->xals, new_count * sizeof(*g_homic_client->xals));
+	if (!new_xal) {
+		err = -ENOMEM;
+		goto exit;
+	}
+
+	new_xal[new_count - 1] = *out;
+	g_homic_client->xals = new_xal;
+	g_homic_client->xal_count = new_count;
+
+exit:
+	free(res);
+
+	return err;
 }
