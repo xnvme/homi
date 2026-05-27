@@ -1,0 +1,13 @@
+cijoe-output
+cijoe-archive
+__pycache__
+docs/build
+docs/tooling/build
+*.egg-info
+
+.vscode
+.DS_Store
+
+/subprojects/*
+!/subprojects/packagefiles
+!/subprojects/*.wrap
