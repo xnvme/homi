@@ -231,3 +231,21 @@ exit:
 
 	return err;
 }
+
+int
+homic_xal_wait(struct xal *xal)
+{
+	int err = 0;
+
+	if (!g_homic_client) {
+		err = -ENOTCONN;
+		fprintf(stderr, "Failed: No connection, please call homic_connect(); err(%d)\n", err);
+		return err;
+	}
+
+	while (xal_is_dirty(xal)) {
+		usleep(1000);
+	}
+
+	return err;
+}
