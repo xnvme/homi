@@ -1,0 +1,40 @@
+doc: |
+  Test for the IPC of HOMI
+  ========================
+
+  This task assumes you have the two keys, "device.uri" and "data.test_file"
+  defined. For example:
+
+    [device]
+    uri = "/dev/nvme0n1"
+
+    [data]
+    test_file = "/mnt/path/to/file_on_device"
+
+steps:
+- name: precondition
+  run: | 
+    cd ~/git/xal; git pull; make;
+    cd ~/git/homi; git pull --rebase; make;
+    sed -i 's|devices = \[ \]|devices = [ "{{ config.device.uri }}" ]|' /etc/homi/homi.conf
+    sed -i 's|log_level = 2|log_level = 4|' /etc/homi/homi.conf
+
+- name: transfer
+  uses: core.put
+  with:
+    src: "{{ local.env.HOME }}/git/homi/cijoe/auxilliary/test-connect-xal.c"
+    dst: "/tmp/test.c"
+
+- name: start
+  run: |
+    cd ~/git/homi; make start; make log;
+    sleep 10 # allow daemon to xal_index()
+
+- name: test_xal
+  run: |
+    gcc /tmp/test.c -o /tmp/test -lhomic -lxal; \
+    /tmp/test {{ config.device.uri }} {{ config.data.test_file }}
+
+- name: stop
+  run: |
+    cd ~/git/homi; make stop; make log;
